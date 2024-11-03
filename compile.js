@@ -1,33 +1,35 @@
-const path = require('path');
-const fs = require('fs');
-const solc = require('solc');
+const path = require("path");
+const fs = require("fs");
+const solc = require("solc");
 
-// Path to your SaleTicket contract file
-const ticketPath = path.resolve(__dirname, 'contracts',  'SaleTicket.sol');
-const source = fs.readFileSync(ticketPath, 'utf8');
-
-// Compile the contract
-const input = {
-    language: 'Solidity',
-    sources: {
-        'SaleTicket.sol': {
-            content: source,
-        },
+const ticketsalePath = path.resolve(__dirname, "contracts", "SaleTicket.sol");
+const source = fs.readFileSync(ticketsalePath, "utf8");
+//console.log(source);
+let input = {
+  language: "Solidity",
+  sources: {
+    "SaleTicket.sol": {
+      content: source,
     },
-    settings: {
-        outputSelection: {
-            '*': {
-                '*': ['abi', 'evm.bytecode'],
-            },
-        },
+  },
+  settings: {
+    outputSelection: {
+      "*": {
+        "*": ["abi", "evm.bytecode"],
+      },
     },
+  },
 };
 
-const output = JSON.parse(solc.compile(JSON.stringify(input)));
+const stringInput = JSON.stringify(input);
 
-// Write ABI and bytecode to separate files
-const contract = output.contracts['SaleTicket.sol'].SaleTicket;
-fs.writeFileSync('SaleTicketABI.txt', JSON.stringify(contract.abi));
-fs.writeFileSync('SaleTicketBytecode.txt', contract.evm.bytecode.object);
+const compiledCode = solc.compile(stringInput);
+const output = JSON.parse(compiledCode);
+const contractOutput = output.contracts;
+const ticketSaleOutput = contractOutput["SaleTicket.sol"];
+const ticketSaleABI = ticketSaleOutput.SaleTicket.abi;
+//console.log(ticketSaleABI);
 
-console.log("ABI and Bytecode generated successfully.");
+const ticketSaleBytecode = ticketSaleOutput.SaleTicket.evm.bytecode;
+// console.log(ticketSaleBytecode);
+module.exports = { abi: ticketSaleABI, bytecode: ticketSaleBytecode.object };
