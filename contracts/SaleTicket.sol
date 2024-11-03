@@ -1,237 +1,131 @@
-const assert = require("assert");
-const ganache = require("ganache-cli");
-const Web3 = require("web3");
-const web3 = new Web3(ganache.provider());
-const { abi, bytecode } = require("../compile");
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
 
-beforeEach(async () => {
-  // Get a list of all accounts
-  accounts = await web3.eth.getAccounts();
+contract SaleTicket {
+    struct Ticket {
+        address owner;
+        uint256 price;
+        bool forSale;
+    }
 
-  // Deploy the contract with constructor arguments
-  ticketSale = await new web3.eth.Contract(abi)
-    .deploy({
-      data: bytecode,
-      arguments: [10, 100], // Passing number of tickets(10) and price(100 each)
-    })
-    .send({ from: accounts[0], gasPrice: 8000000000, gas: 4700000 });
-});
+    address public manager;
+    uint256 public ticketPrice;
+    uint256 public totalTickets;
+    mapping(uint256 => Ticket) public tickets;
+    mapping(address => uint256) public ticketOwners;
+    mapping(address => mapping(address => uint256)) public swapOffers;
 
-describe("ticketSale", () => {
-  it("deploys a contract", () => {
-    assert.ok(ticketSale.options.address, "Contract deployment failed");
-  });
+    // Constructor initializes the contract with a specified number of tickets and their price, 
+    // setting the sender as the manager
+    constructor(uint256 numTickets, uint256 price) {
+        manager = msg.sender;
+        totalTickets = numTickets;
+        ticketPrice = price;
+    }
 
-  it("allows ticket purchase", async () => {
-    const ticketId = 1; // Buy ticket with ID 1
-    const buyer = accounts[1];
-    const initialBalance = await web3.eth.getBalance(buyer);
-    await ticketSale.methods.buyTicket(ticketId).send({
-      from: buyer,
-      value: 100,
-    });
+    // Allows a user to purchase a ticket by providing the correct payment amount and an available ticket ID
+    function buyTicket(uint256 ticketId) public payable {
+        require(ticketId > 0 && ticketId <= totalTickets, "Invalid ticket ID");
+        require(tickets[ticketId].owner == address(0), "Ticket already sold");
+        require(ticketOwners[msg.sender] == 0, "You already own a ticket");
+        require(msg.value == ticketPrice, "Incorrect payment amount");
 
-    const ticketIdOwned = parseInt(
-      await ticketSale.methods.getTicketOf(buyer).call()
-    );
-    const finalBalance = await web3.eth.getBalance(buyer);
+        tickets[ticketId].owner = msg.sender;
+        ticketOwners[msg.sender] = ticketId;
+    }
 
-    assert.equal(
-      ticketIdOwned,
-      ticketId,
-      "Buyer does not own the correct ticket after purchase"
-    );
-    assert(
-      web3.utils.toBN(initialBalance).gt(web3.utils.toBN(finalBalance)),
-      "Buyer's balance did not decrease as expected"
-    );
+    // Returns the ticket ID owned by a specified address
+    function getTicketOf(address person) public view returns (uint256) {
+        return ticketOwners[person];
+    }
 
-    const buyerTicket = await ticketSale.methods.tickets(ticketId).call();
-    assert.equal(
-      buyerTicket.owner,
-      buyer,
-      "Ticket ownership not correctly assigned to buyer"
-    );
-  });
+    // Allows a user to offer their ticket for a swap with another ticket by its ID
+    function offerSwap(uint256 ticketId) public {
+        require(ticketOwners[msg.sender] != 0, "You don't own a ticket");
+        require(tickets[ticketId].owner != address(0), "Target ticket not sold");
+        require(tickets[ticketId].owner != msg.sender, "Cannot swap with yourself");
 
-  it("records a swap offer correctly", async () => {
-    const buyer1 = accounts[2];
-    const buyer2 = accounts[3];
-    const ticket1Id = 2;
-    const ticket2Id = 3;
+        uint256 myTicketId = ticketOwners[msg.sender];
+        address targetOwner = tickets[ticketId].owner;
 
-    await ticketSale.methods
-      .buyTicket(ticket1Id)
-      .send({ from: buyer1, value: 100 });
-    await ticketSale.methods
-      .buyTicket(ticket2Id)
-      .send({ from: buyer2, value: 100 });
+        swapOffers[msg.sender][targetOwner] = myTicketId;
+    }
 
-    await ticketSale.methods.offerSwap(ticket2Id).send({ from: buyer1 });
+    // Enables a user to accept a pending swap offer on their ticket
+    function acceptSwap(uint256 myTicketId) public {
+        require(ticketOwners[msg.sender] == myTicketId, "You don't own this ticket");
 
-    const swapOffer = parseInt(
-      await ticketSale.methods.swapOffers(buyer1, buyer2).call()
-    );
+        address swapPartner;
+        uint256 offeredTicketId = 0;
 
-    assert.equal(swapOffer, ticket1Id, "Swap offer not recorded correctly");
+        // Search for an active swap offer from another ticket owner
+        for (uint256 i = 1; i <= totalTickets; i++) {
+            if (swapOffers[tickets[i].owner][msg.sender] != 0) {
+                swapPartner = tickets[i].owner;
+                offeredTicketId = swapOffers[swapPartner][msg.sender];
+                break;
+            }
+        }
 
-    const buyer1Ticket = parseInt(
-      await ticketSale.methods.getTicketOf(buyer1).call()
-    );
-    assert.equal(
-      buyer1Ticket,
-      ticket1Id,
-      "Buyer1 should still have their original ticket after offering swap"
-    );
+        require(offeredTicketId != 0, "No swap offer for you");
 
-    const buyer2Ticket = parseInt(
-      await ticketSale.methods.getTicketOf(buyer2).call()
-    );
-    assert.equal(
-      buyer2Ticket,
-      ticket2Id,
-      "Buyer2 should still have their original ticket"
-    );
-  });
+        // Complete the ticket swap between the two users
+        tickets[myTicketId].owner = swapPartner;
+        tickets[offeredTicketId].owner = msg.sender;
+        ticketOwners[msg.sender] = offeredTicketId;
+        ticketOwners[swapPartner] = myTicketId;
 
-  it("executes ticket swap offer successfully", async () => {
-    const buyer1 = accounts[4];
-    const buyer2 = accounts[5];
-    const ticket1Id = 4;
-    const ticket2Id = 5;
+        // Remove the swap offer
+        delete swapOffers[swapPartner][msg.sender];
+    }
 
-    await ticketSale.methods
-      .buyTicket(ticket1Id)
-      .send({ from: buyer1, value: 100 });
-    await ticketSale.methods
-      .buyTicket(ticket2Id)
-      .send({ from: buyer2, value: 100 });
+    // Allows the ticket owner to set their ticket for resale at a specified price
+    function resaleTicket(uint256 price) public {
+        uint256 ticketId = ticketOwners[msg.sender];
+        require(ticketId != 0, "You don't own a ticket");
 
-    await ticketSale.methods.offerSwap(ticket2Id).send({ from: buyer1 });
-    await ticketSale.methods.acceptSwap(ticket2Id).send({ from: buyer2 });
+        tickets[ticketId].price = price;
+        tickets[ticketId].forSale = true;
+    }
 
-    const buyer1NewTicket = parseInt(
-      await ticketSale.methods.getTicketOf(buyer1).call()
-    );
-    const buyer2NewTicket = parseInt(
-      await ticketSale.methods.getTicketOf(buyer2).call()
-    );
-    assert.equal(
-      buyer1NewTicket,
-      ticket2Id,
-      "Ticket swap failed; Buyer1 does not have Buyer2's ticket"
-    );
-    assert.equal(
-      buyer2NewTicket,
-      ticket1Id,
-      "Ticket swap failed; Buyer2 does not have Buyer1's ticket"
-    );
-  });
+    // Allows a user to buy a ticket that is on resale
+    function acceptResale(uint256 ticketId) public payable {
+        require(tickets[ticketId].forSale, "Ticket not for sale");
+        require(ticketOwners[msg.sender] == 0, "You already own a ticket");
+        require(msg.value == tickets[ticketId].price, "Incorrect payment amount");
 
-  it("sets ticket for resale at specified price", async () => {
-    const buyer = accounts[6];
-    const ticketId = 6;
-    const initialPrice = 100;
-    const resalePrice = 120;
+        address seller = tickets[ticketId].owner;
+        uint256 serviceFee = (tickets[ticketId].price * 10) / 100;
+        uint256 sellerAmount = tickets[ticketId].price - serviceFee;
 
-    await ticketSale.methods
-      .buyTicket(ticketId)
-      .send({ from: buyer, value: initialPrice });
+        payable(seller).transfer(sellerAmount);
+        payable(manager).transfer(serviceFee);
 
-    const initialOwner = parseInt(
-      await ticketSale.methods.getTicketOf(buyer).call()
-    );
-    assert.equal(
-      initialOwner,
-      ticketId,
-      "Buyer does not initially own the ticket before resale"
-    );
+        tickets[ticketId].owner = msg.sender;
+        tickets[ticketId].forSale = false;
+        ticketOwners[msg.sender] = ticketId;
+        delete ticketOwners[seller];
+    }
 
-    await ticketSale.methods.resaleTicket(resalePrice).send({ from: buyer });
+    // Returns an array of tickets available for resale, each followed by its price
+    function checkResale() public view returns (uint256[] memory) {
+        uint256 count = 0;
+        for (uint256 i = 1; i <= totalTickets; i++) {
+            if (tickets[i].forSale) {
+                count++;
+            }
+        }
 
-    const resaleTicketDetails = await ticketSale.methods
-      .tickets(ticketId)
-      .call();
-    assert.equal(
-      resaleTicketDetails.price,
-      resalePrice,
-      "Resale price not set correctly"
-    );
-    assert.equal(
-      resaleTicketDetails.forSale,
-      true,
-      "Ticket is not marked as for sale"
-    );
+        uint256[] memory resaleTickets = new uint256[](count * 2);
+        uint256 index = 0;
+        for (uint256 i = 1; i <= totalTickets; i++) {
+            if (tickets[i].forSale) {
+                resaleTickets[index] = i;
+                resaleTickets[index + 1] = tickets[i].price;
+                index += 2;
+            }
+        }
 
-    const resaleList = await ticketSale.methods.checkResale().call();
-    assert(
-      resaleList.includes(ticketId.toString()),
-      "Ticket not found in resale list"
-    );
-  });
-
-  it("processes resale ticket purchase with service fee distribution", async () => {
-    const seller = accounts[7];
-    const buyer = accounts[8];
-    const manager = await ticketSale.methods.manager().call();
-    const ticketId = 7;
-    const initialPrice = 100;
-    const resalePrice = 120;
-
-    await ticketSale.methods
-      .buyTicket(ticketId)
-      .send({ from: seller, value: initialPrice });
-
-    await ticketSale.methods.resaleTicket(resalePrice).send({ from: seller });
-
-    const initialSellerBalance = await web3.eth.getBalance(seller);
-    const initialManagerBalance = await web3.eth.getBalance(manager);
-
-    await ticketSale.methods
-      .acceptResale(ticketId)
-      .send({ from: buyer, value: resalePrice });
-
-    const newOwner = parseInt(
-      await ticketSale.methods.getTicketOf(buyer).call()
-    );
-    assert.equal(newOwner, ticketId, "Buyer does not own the ticket after resale");
-
-    const ticketDetails = await ticketSale.methods.tickets(ticketId).call();
-    assert.equal(
-      ticketDetails.forSale,
-      false,
-      "Ticket incorrectly remains marked for sale after resale"
-    );
-
-    const sellerTicket = parseInt(
-      await ticketSale.methods.getTicketOf(seller).call()
-    );
-    assert.equal(sellerTicket, 0, "Seller incorrectly retains ticket ownership");
-
-    const serviceFee = web3.utils
-      .toBN(resalePrice)
-      .mul(web3.utils.toBN(10))
-      .div(web3.utils.toBN(100));
-    const sellerAmount = web3.utils.toBN(resalePrice).sub(serviceFee);
-
-    const finalSellerBalance = await web3.eth.getBalance(seller);
-    assert.equal(
-      web3.utils
-        .toBN(finalSellerBalance)
-        .sub(web3.utils.toBN(initialSellerBalance))
-        .toString(),
-      sellerAmount.toString(),
-      "Seller did not receive the correct resale amount"
-    );
-
-    const finalManagerBalance = await web3.eth.getBalance(manager);
-    assert.equal(
-      web3.utils
-        .toBN(finalManagerBalance)
-        .sub(web3.utils.toBN(initialManagerBalance))
-        .toString(),
-      serviceFee.toString(),
-      "Manager did not receive the correct service fee"
-    );
-  });
-});
+        return resaleTickets;
+    }
+}
